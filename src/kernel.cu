@@ -80,6 +80,7 @@ dim3 threadsPerBlock(blockSize);
 glm::vec3 *dev_pos;
 glm::vec3 *dev_vel1;
 glm::vec3 *dev_vel2;
+bool ff_buffer = true;
 
 // LOOK-2.1 - these are NOT allocated for you. You'll have to set up the thrust
 // pointers on your own too.
@@ -261,13 +262,13 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
         if (i == iSelf) {
             continue;
         }
-        auto dist = glm::length(cur - thisPos);
+        auto dist = glm::length(pos[i] - thisPos);
         if (dist < rule1Distance) {
             ++tot_rule1;
             avg_pos += pos[i];
         }
         if (dist < rule2Distance) {
-            rule2 -= (cur - thisPos);
+            rule2 -= (pos[i] - thisPos);
         }
         if (dist < rule3Distance) {
             ++tot_rule3;
@@ -291,12 +292,13 @@ __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N) {
-        vel2[idx] += computeVelocityChange(N, idx, pos, vel1);
-        if (glm::length(vel2[idx]) > maxSpeed) {
-            vel2[idx] = glm::normalize(vel2[idx]) * maxSpeed; 
-        }
+    if (idx >= N) {
+        return;
     }
+    vel2[idx] += computeVelocityChange(N, idx, pos, vel1);
+    if (glm::length(vel2[idx]) > maxSpeed) {
+        vel2[idx] = glm::normalize(vel2[idx]) * maxSpeed; 
+        }
 
   // Compute a new velocity based on pos and vel1    
   // Clamp the speed
@@ -405,6 +407,18 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
   // TODO-1.2 ping-pong the velocity buffers
+    dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+    if (ff_buffer) {
+        // update vel2 and use vel1 for change
+        kernUpdateVelocityBruteForce<<< fullBlocksPerGrid, blockSize >>> (numObjects, dev_pos, dev_vel1, dev_vel2);
+        kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel1);
+    }
+    else {
+        // update vel1 and use vel2 for change
+        kernUpdateVelocityBruteForce << < fullBlocksPerGrid, blockSize >> > (numObjects, dev_pos, dev_vel2, dev_vel1);
+        kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
+    }
+    ff_buffer = !ff_buffer;
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
