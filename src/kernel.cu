@@ -464,6 +464,35 @@ void Boids::endSimulation() {
 
 void Boids::unitTest() {
   // LOOK-1.2 Feel free to write additional tests here.
+  // Test for naive boids
+  // initialize with specific locations
+
+    glm::vec3 test1_pos[4] = {
+        glm::vec3(0.0f),
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 2.0f, 0.0f),
+        glm::vec3(50.0f)
+    };
+
+    cudaMalloc((void**)&dev_pos, 4 * sizeof(glm::vec3));
+    checkCUDAErrorWithLine("test1: cudaMalloc dev_pos failed");
+
+    cudaMalloc((void**)&dev_vel1, 4 * sizeof(glm::vec3));
+    checkCUDAErrorWithLine("test1: cudaMalloc dev_vel1 failed");
+
+    cudaMalloc((void**)&dev_vel2, 4 * sizeof(glm::vec3));
+    checkCUDAErrorWithLine("test1: cudaMalloc dev_pos failed");
+
+    // Initialize velocity to 0
+    cudaMemset(dev_vel1, 0, N * sizeof(glm::vec3));
+    checkCUDAErrorWithLine("cudaMemset dev_vel1 failed!");
+
+    cudaMemset(dev_vel2, 0, N * sizeof(glm::vec3));
+    checkCUDAErrorWithLine("cudaMemset dev_vel2 failed!");
+
+    // set custom test val
+    cudaMemcpy(dev_pos, test1_pos, 4 * sizeof(glm::vec3), cudaMemcpyHostToDevice)
+
 
   // test unstable sort
   int *dev_intKeys;
