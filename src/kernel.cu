@@ -15,6 +15,7 @@
 #include <thrust/device_vector.h>
 
 #include <glm/glm.hpp>
+#include <glm/geometric.hpp>
 
 // LOOK-2.1 potentially useful for doing grid-based neighbor search
 #ifndef imax
@@ -248,9 +249,38 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 */
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
   // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
-  // Rule 2: boids try to stay a distance d away from each other
-  // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(0.0f, 0.0f, 0.0f);
+    glm::vec3 thisPos = pos[iSelf];
+    int tot_rule1;
+    int tot_rule3;
+    glm::vec3 avg_pos(0.0f);
+    glm::vec3 avg_vel(0.0f);
+    glm::vec3 rule2(0.0f);
+
+    for (int i = 0; i < N; ++i) {
+        // loop over all neighbor boids
+        if (i == iSelf) {
+            continue;
+        }
+        auto dist = glm::length(cur - thisPos);
+        if (dist < rule1Distance) {
+            ++tot_rule1;
+            avg_pos += pos[i];
+        }
+        if (dist < rule2Distance) {
+            rule2 -= (cur - thisPos);
+        }
+        if (dist < rule3Distance) {
+            ++tot_rule3;
+            avg_vel += vel[i];
+        }
+    }
+    avg_pos /= tot_rule1;
+    avg_vel /= tot_rule3;
+    auto rule1_scaled = (avg_pos - thisPos) * rule1Scale;
+    auto rule2_scaled = rule2 * rule2Scale;
+    auto rule3_scaled = avg_vel * rule3Scale; // slight deviation from traditional boids
+
+  return rule1_scaled + rule2_scaled + rule3_scaled;
 }
 
 /**
@@ -259,7 +289,16 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 */
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
-  // Compute a new velocity based on pos and vel1
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        vel2[idx] += computeVelocityChange(N, idx, pos, vel1);
+        if (glm::length(vel2[idx]) > maxSpeed) {
+            vel2[idx] = glm::normalize(vel2[idx]) * maxSpeed; 
+        }
+    }
+
+  // Compute a new velocity based on pos and vel1    
   // Clamp the speed
   // Record the new velocity into vel2. Question: why NOT vel1?
 }
