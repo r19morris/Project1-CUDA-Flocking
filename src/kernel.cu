@@ -355,6 +355,16 @@ __global__ void kernComputeIndices(int N, int gridResolution,
     // - Label each boid with the index of its grid cell.
     // - Set up a parallel array of integer indices as pointers to the actual
     //   boid data in pos and vel1/vel2
+    int index = threadIdx.x + (blockIdx.x * blockDim.x);
+    if (index >= N) {
+        return;
+    }
+    auto thisPos = pos[index];
+    auto scaled = glm::floor((thisPos - gridMin) * inverseCellWidth);
+    auto gridIdx = gridIndex3Dto1D((int)scaled.x, (int)scaled.y, (int)scaled.z, gridResolution);
+    indices[index] = index;
+    gridIndices[index] = gridIdx;
+    return;
 }
 
 // LOOK-2.1 Consider how this could be useful for indicating that a cell
@@ -372,6 +382,28 @@ __global__ void kernIdentifyCellStartEnd(int N, int *particleGridIndices,
   // Identify the start point of each cell in the gridIndices array.
   // This is basically a parallel unrolling of a loop that goes
   // "this index doesn't match the one before it, must be a new cell!"
+    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (index >= N) {
+        return;
+    }
+    int gridIdx = particleGridIndices[index];
+    if (index == 0) {
+        gridCellStartIndices[gridIdx] = index;
+        if (N == 1) {
+            gridCellEndIndices[gridIdx] = index;
+        }
+        return;
+    }
+    int prev_gridIdx = particleGridIndices[index - 1];
+    if (prev_gridIdx != gridIdx) {
+        gridCellStartIndices[gridIdx] = index;
+        gridCellEndIndices[prev_gridIdx] = index - 1;
+
+    }
+    if (index == N) {
+        gridCellEndIndices[gridIdx] = index;
+    }
+    return;
 }
 
 __global__ void kernUpdateVelNeighborSearchScattered(
