@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 #include <thrust/sort.h>
@@ -80,7 +81,6 @@ dim3 threadsPerBlock(blockSize);
 glm::vec3 *dev_pos;
 glm::vec3 *dev_vel1;
 glm::vec3 *dev_vel2;
-bool ff_buffer = true;
 
 // LOOK-2.1 - these are NOT allocated for you. You'll have to set up the thrust
 // pointers on your own too.
@@ -251,8 +251,8 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
   // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
     glm::vec3 thisPos = pos[iSelf];
-    int tot_rule1;
-    int tot_rule3;
+    int tot_rule1 = 0;
+    int tot_rule3 = 0;
     glm::vec3 avg_pos(0.0f);
     glm::vec3 avg_vel(0.0f);
     glm::vec3 rule2(0.0f);
@@ -275,8 +275,15 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
             avg_vel += vel[i];
         }
     }
-    avg_pos /= tot_rule1;
-    avg_vel /= tot_rule3;
+    if (tot_rule1) {
+        avg_pos /= tot_rule1;
+    }
+    else {
+        avg_pos = thisPos; // doNothing
+    }
+    if (tot_rule3) {
+        avg_vel /= tot_rule3;
+    }
     auto rule1_scaled = (avg_pos - thisPos) * rule1Scale;
     auto rule2_scaled = rule2 * rule2Scale;
     auto rule3_scaled = avg_vel * rule3Scale; // slight deviation from traditional boids
@@ -295,8 +302,9 @@ __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
     if (idx >= N) {
         return;
     }
-    vel2[idx] += computeVelocityChange(N, idx, pos, vel1);
+    vel2[idx] = vel1[idx] + computeVelocityChange(N, idx, pos, vel1); // add to cur vel (vel1)
     if (glm::length(vel2[idx]) > maxSpeed) {
+        // clamp
         vel2[idx] = glm::normalize(vel2[idx]) * maxSpeed; 
         }
 
@@ -408,17 +416,11 @@ void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
   // TODO-1.2 ping-pong the velocity buffers
     dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
-    if (ff_buffer) {
-        // update vel2 and use vel1 for change
-        kernUpdateVelocityBruteForce<<< fullBlocksPerGrid, blockSize >>> (numObjects, dev_pos, dev_vel1, dev_vel2);
-        kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel1);
-    }
-    else {
-        // update vel1 and use vel2 for change
-        kernUpdateVelocityBruteForce << < fullBlocksPerGrid, blockSize >> > (numObjects, dev_pos, dev_vel2, dev_vel1);
-        kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
-    }
-    ff_buffer = !ff_buffer;
+
+    kernUpdateVelocityBruteForce << < fullBlocksPerGrid, blockSize >> > (numObjects, dev_pos, dev_vel1, dev_vel2);
+    kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
+
+    std::swap(dev_vel1, dev_vel2);
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
@@ -467,6 +469,8 @@ void Boids::unitTest() {
   // Test for naive boids
   // initialize with specific locations
 
+    numObjects = 4;
+
     glm::vec3 test1_pos[4] = {
         glm::vec3(0.0f),
         glm::vec3(1.0f, 0.0f, 0.0f),
@@ -484,14 +488,59 @@ void Boids::unitTest() {
     checkCUDAErrorWithLine("test1: cudaMalloc dev_pos failed");
 
     // Initialize velocity to 0
-    cudaMemset(dev_vel1, 0, N * sizeof(glm::vec3));
+    cudaMemset(dev_vel1, 0, 4 * sizeof(glm::vec3));
     checkCUDAErrorWithLine("cudaMemset dev_vel1 failed!");
 
-    cudaMemset(dev_vel2, 0, N * sizeof(glm::vec3));
+    cudaMemset(dev_vel2, 0, 4 * sizeof(glm::vec3));
     checkCUDAErrorWithLine("cudaMemset dev_vel2 failed!");
 
     // set custom test val
-    cudaMemcpy(dev_pos, test1_pos, 4 * sizeof(glm::vec3), cudaMemcpyHostToDevice)
+    cudaMemcpy(dev_pos, test1_pos, 4 * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
+    stepSimulationNaive(1.0f); // test of one iteration
+    glm::vec3 pos_res[4];
+    glm::vec3 vel1_res[4];
+    glm::vec3 vel2_res[4];
+    cudaMemcpy(pos_res, dev_pos, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(vel1_res, dev_vel1, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(vel2_res, dev_vel2, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+
+    glm::vec3 pos_exp[4] = {
+        glm::vec3(-0.095f, -0.19f, 0.0f),
+        glm::vec3(1.19f, -0.19f, 0.0f),
+        glm::vec3(-0.095f, 2.38f, 0.0f),
+        glm::vec3(50.0f)
+    };
+
+    // dev1 pts to dev2 from the simulation
+    glm::vec3 vel1_exp[4] = {
+    glm::vec3(-0.095f, -0.19f, 0.0f),
+    glm::vec3(0.19f, -0.19f, 0.0f),
+    glm::vec3(-0.095f, 0.38f, 0.0f),
+    glm::vec3(0.0f)
+    };
+
+    // dev2 is "empty" it was the existing dev1
+    glm::vec3 vel2_exp[4] = {
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f)
+    };
+
+    // print out inconsistencies
+
+    for (int i = 0; i < 4; ++i) {
+        glm::vec3 pos_dif = pos_res[i] - pos_exp[i];
+        float err1 = glm::length(pos_dif);
+        glm::vec3 vel1_dif = vel1_res[i] - vel1_exp[i];
+        float err2 = glm::length(vel1_dif);
+        glm::vec3 vel2_dif = vel2_res[i] - vel2_exp[i];
+        float err3 = glm::length(vel2_dif);
+        std::cout << "Boid " << i << " pos: " << err1 << " vel1: " << err2 << " vel2: " << err3 << std::endl;
+    }
+
+
 
 
   // test unstable sort

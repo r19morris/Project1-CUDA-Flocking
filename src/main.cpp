@@ -117,6 +117,9 @@ bool init(int argc, char **argv) {
   cudaGLRegisterBufferObject(boidVBO_positions);
   cudaGLRegisterBufferObject(boidVBO_velocities);
 
+  // run unit tests
+  Boids::unitTest();
+
   // Initialize N-body simulation
   Boids::initSimulation(N_FOR_VIS);
 
@@ -226,7 +229,9 @@ void initShaders(GLuint * program) {
     double timebase = 0;
     int frame = 0;
 
-    Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
+
+    // moved unit tests to before sim init so N can be changed
+    //Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
                        // your CUDA development setup is ready to go.
 
     while (!glfwWindowShouldClose(window)) {
