@@ -63,6 +63,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 #define rule3Scale 0.1f
 
 #define maxSpeed 1.0f
+#define gridCellRatio 2.0f // gridCellWidth / neighborhood distance
 
 /*! Size of the starting area in simulation space. */
 #define scene_scale 100.0f
@@ -107,6 +108,7 @@ int gridCellCount;
 int gridSideCount;
 float gridCellWidth;
 float gridInverseCellWidth;
+float neighborhoodDistance;
 glm::vec3 gridMinimum;
 
 /******************
@@ -179,7 +181,8 @@ void Boids::initSimulation(int N) {
   checkCUDAErrorWithLine("kernGenerateRandomPosArray failed!");
 
   // LOOK-2.1 computing grid params
-  gridCellWidth = 2.0f * std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
+  neighborhoodDistance = std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
+  gridCellWidth = gridCellRatio * neighborhoodDistance;
   int halfSideCount = (int)(scene_scale / gridCellWidth) + 1;
   gridSideCount = 2 * halfSideCount;
 
@@ -443,7 +446,7 @@ __global__ void kernSort(int N, int* particleArrayIndices, glm::vec3* pos_in, gl
 
 __global__ void kernUpdateVelNeighborSearchScattered(
   int N, int gridResolution, glm::vec3 gridMin,
-  float inverseCellWidth, float cellWidth,
+  float inverseCellWidth, float cellWidth, float neighborhoodDist,
   int *gridCellStartIndices, int *gridCellEndIndices,
   int *particleArrayIndices,
   glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
@@ -459,21 +462,22 @@ __global__ void kernUpdateVelNeighborSearchScattered(
     if (index >= N) {
         return;
     }
-    auto grid_pos = glm::round((pos[index] - gridMin) * inverseCellWidth);
+    //auto grid_pos = glm::floor((pos[index] - gridMin) * inverseCellWidth)
     // note for caller, neg values of to_check are not valid
-    int to_check[8] = {
-        // could reduce number of calls to this func and offset
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y - 1, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y - 1, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y - 1, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y - 1, (int)grid_pos.z - 1, gridResolution)
-    };
 
+    auto adj_pos = pos[index] - gridMin;
 
+    // consider device helper for grid position
+    auto max_grid = glm::floor((adj_pos + glm::vec3(neighborhoodDist)) * inverseCellWidth);
+    auto min_grid = glm::floor((adj_pos - glm::vec3(neighborhoodDist)) * inverseCellWidth);
+    int z_start = imin(gridResolution - 1, imax(0, (int)min_grid.z));
+    int z_end = imin(gridResolution - 1, imax(0, (int)max_grid.z));
+    int y_start = imin(gridResolution - 1, imax(0, (int)min_grid.y));
+    int y_end = imin(gridResolution - 1, imax(0, (int)max_grid.y));
+    int x_start = imin(gridResolution - 1, imax(0, (int)min_grid.x));
+    int x_end = imin(gridResolution - 1, imax(0, (int)max_grid.x));
+
+    // our cell grid index
     auto scaled = glm::floor((pos[index] - gridMin) * inverseCellWidth);
     auto gridIdx = gridIndex3Dto1D((int)scaled.x, (int)scaled.y, (int)scaled.z, gridResolution);
 
@@ -485,42 +489,50 @@ __global__ void kernUpdateVelNeighborSearchScattered(
     glm::vec3 avg_vel(0.0f);
     glm::vec3 rule2(0.0f);
 
-    int top_block = gridResolution * gridResolution * gridResolution;
+    // z then y then x (xs are adjacent and should be in order on inner loop
+    int g_res_sq = gridResolution * gridResolution;
+    int n_gidx; // neighbor grid index
+    for (int z = z_start; z <= z_end; ++z) {
+        for (int y = y_start; y <= y_end; ++y) {
+            n_gidx = z * g_res_sq + y * gridResolution + x_start;
+            int end_of_loop = n_gidx + (x_end - x_start);
+            for (; n_gidx <= end_of_loop; ++n_gidx) {
 
-    for (int i = 0; i < 8; ++i) {
-        if (to_check[i] >= 0 && to_check[i] < top_block) {
-            int iter_idx = gridCellStartIndices[to_check[i]];
-            if (iter_idx < 0) {
-                // no boids inside
-                continue;
-            }
-            while (iter_idx <= gridCellEndIndices[to_check[i]]) {
-                // update velocity here
-                int n_idx = particleArrayIndices[iter_idx];
-                if (index == n_idx) {
-                    // this is current boid
-                    ++iter_idx;
+                int iter_idx = gridCellStartIndices[n_gidx];
+                if (iter_idx < 0) {
+                    // no boids inside
                     continue;
                 }
-                auto n_pos = pos[n_idx];
-                auto dist = glm::length(n_pos - thisPos);
-                if (dist < rule1Distance) {
-                    ++tot_rule1;
-                    avg_pos += n_pos;
-                }
-                if (dist < rule2Distance) {
-                    rule2 -= (n_pos - thisPos);
-                }
-                if (dist < rule3Distance) {
-                    ++tot_rule3;
-                    avg_vel += vel1[n_idx];
-                }
+                while (iter_idx <= gridCellEndIndices[n_gidx]) {
+                    // update velocity here
+                    int n_idx = particleArrayIndices[iter_idx];
+                    if (index == n_idx) {
+                        // this is current boid
+                        ++iter_idx;
+                        continue;
+                    }
+                    auto n_pos = pos[n_idx];
+                    auto dist = glm::length(n_pos - thisPos);
+                    if (dist < rule1Distance) {
+                        ++tot_rule1;
+                        avg_pos += n_pos;
+                    }
+                    if (dist < rule2Distance) {
+                        rule2 -= (n_pos - thisPos);
+                    }
+                    if (dist < rule3Distance) {
+                        ++tot_rule3;
+                        avg_vel += vel1[n_idx];
+                    }
 
 
-                ++iter_idx;
+                    ++iter_idx;
+                }
             }
         }
     }
+
+
     if (tot_rule1) {
         avg_pos /= tot_rule1;
     }
@@ -703,7 +715,7 @@ void Boids::stepSimulationScatteredGrid(float dt) {
         dev_gridCellEndIndices);
 
     kernUpdateVelNeighborSearchScattered << <fullBlocksPerGrid, blockSize >> > (numObjects, gridSideCount, gridMinimum,
-        gridInverseCellWidth, gridCellWidth, dev_gridCellStartIndices, dev_gridCellEndIndices,
+        gridInverseCellWidth, gridCellWidth, neighborhoodDistance, dev_gridCellStartIndices, dev_gridCellEndIndices,
         dev_particleArrayIndices, dev_pos, dev_vel1, dev_vel2);
 
     kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
