@@ -462,8 +462,6 @@ __global__ void kernUpdateVelNeighborSearchScattered(
     if (index >= N) {
         return;
     }
-    //auto grid_pos = glm::floor((pos[index] - gridMin) * inverseCellWidth)
-    // note for caller, neg values of to_check are not valid
 
     auto adj_pos = pos[index] - gridMin;
 
@@ -563,7 +561,7 @@ __global__ void kernUpdateVelNeighborSearchScattered(
 
 __global__ void kernUpdateVelNeighborSearchCoherent(
   int N, int gridResolution, glm::vec3 gridMin,
-  float inverseCellWidth, float cellWidth,
+  float inverseCellWidth, float cellWidth, float neighborhoodDist,
   int *gridCellStartIndices, int *gridCellEndIndices,
   glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
   // TODO-2.3 - This should be very similar to kernUpdateVelNeighborSearchScattered,
@@ -578,29 +576,28 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
   // - Access each boid in the cell and compute velocity change from
   //   the boids rules, if this boid is within the neighborhood distance.
   // - Clamp the speed change before putting the new speed in vel2
+
+
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (index >= N) {
         return;
     }
-    auto grid_pos = glm::round((pos[index] - gridMin) * inverseCellWidth);
 
-    // note for caller, neg values of to_check are not valid. REFACTOR so its dynamic
-    int to_check[8] = {
-        // could reduce number of calls to this func and offset
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y - 1, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x, (int)grid_pos.y - 1, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y, (int)grid_pos.z - 1, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y - 1, (int)grid_pos.z, gridResolution),
-        gridIndex3Dto1D((int)grid_pos.x - 1, (int)grid_pos.y - 1, (int)grid_pos.z - 1, gridResolution)
-    };
+    auto adj_pos = pos[index] - gridMin;
 
+    // consider device helper for grid position
+    auto max_grid = glm::floor((adj_pos + glm::vec3(neighborhoodDist)) * inverseCellWidth);
+    auto min_grid = glm::floor((adj_pos - glm::vec3(neighborhoodDist)) * inverseCellWidth);
+    int z_start = imin(gridResolution - 1, imax(0, (int)min_grid.z));
+    int z_end = imin(gridResolution - 1, imax(0, (int)max_grid.z));
+    int y_start = imin(gridResolution - 1, imax(0, (int)min_grid.y));
+    int y_end = imin(gridResolution - 1, imax(0, (int)max_grid.y));
+    int x_start = imin(gridResolution - 1, imax(0, (int)min_grid.x));
+    int x_end = imin(gridResolution - 1, imax(0, (int)max_grid.x));
+
+    // our cell grid index
     auto scaled = glm::floor((pos[index] - gridMin) * inverseCellWidth);
     auto gridIdx = gridIndex3Dto1D((int)scaled.x, (int)scaled.y, (int)scaled.z, gridResolution);
-    // old
-
 
     // start the rule1/2/3 accumulations
     glm::vec3 thisPos = pos[index];
@@ -610,42 +607,49 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
     glm::vec3 avg_vel(0.0f);
     glm::vec3 rule2(0.0f);
 
-    int top_block = gridResolution * gridResolution * gridResolution;
+    // z then y then x (xs are adjacent and should be in order on inner loop
+    int g_res_sq = gridResolution * gridResolution;
+    int n_gidx; // neighbor grid index
+    for (int z = z_start; z <= z_end; ++z) {
+        for (int y = y_start; y <= y_end; ++y) {
+            n_gidx = z * g_res_sq + y * gridResolution + x_start;
+            int end_of_loop = n_gidx + (x_end - x_start);
+            for (; n_gidx <= end_of_loop; ++n_gidx) {
 
-    for (int i = 0; i < 8; ++i) {
-        if (to_check[i] >= 0 && to_check[i] < top_block) {
-            int iter_idx = gridCellStartIndices[to_check[i]];
-            if (iter_idx < 0) {
-                // no boids inside
-                continue;
-            }
-            while (iter_idx <= gridCellEndIndices[to_check[i]]) {
-                // update velocity here
-
-                if (index == iter_idx) {
-                    // this is current boid
-                    ++iter_idx;
+                int iter_idx = gridCellStartIndices[n_gidx];
+                if (iter_idx < 0) {
+                    // no boids inside
                     continue;
                 }
-                auto n_pos = pos[iter_idx];
-                auto dist = glm::length(n_pos - thisPos);
-                if (dist < rule1Distance) {
-                    ++tot_rule1;
-                    avg_pos += n_pos;
-                }
-                if (dist < rule2Distance) {
-                    rule2 -= (n_pos - thisPos);
-                }
-                if (dist < rule3Distance) {
-                    ++tot_rule3;
-                    avg_vel += vel1[iter_idx];
-                }
+                while (iter_idx <= gridCellEndIndices[n_gidx]) {
+                    // update velocity here
+                    if (index == iter_idx) {
+                        // this is current boid
+                        ++iter_idx;
+                        continue;
+                    }
+                    auto n_pos = pos[iter_idx];
+                    auto dist = glm::length(n_pos - thisPos);
+                    if (dist < rule1Distance) {
+                        ++tot_rule1;
+                        avg_pos += n_pos;
+                    }
+                    if (dist < rule2Distance) {
+                        rule2 -= (n_pos - thisPos);
+                    }
+                    if (dist < rule3Distance) {
+                        ++tot_rule3;
+                        avg_vel += vel1[iter_idx];
+                    }
 
 
-                ++iter_idx;
+                    ++iter_idx;
+                }
             }
         }
     }
+
+
     if (tot_rule1) {
         avg_pos /= tot_rule1;
     }
@@ -669,6 +673,7 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
         vel2[index] = glm::normalize(vel2[index]) * maxSpeed;
     }
     return;
+   
 }
 
 /**
@@ -766,7 +771,7 @@ void Boids::stepSimulationCoherentGrid(float dt) {
     std::swap(dev_vel1, dev_vel1_sort);
 
     kernUpdateVelNeighborSearchCoherent << <fullBlocksPerGrid, blockSize >> > (numObjects,
-        gridSideCount, gridMinimum, gridInverseCellWidth, gridCellWidth,
+        gridSideCount, gridMinimum, gridInverseCellWidth, gridCellWidth, neighborhoodDistance, 
         dev_gridCellStartIndices, dev_gridCellEndIndices, dev_pos, dev_vel1, dev_vel2);
 
 
