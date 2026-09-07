@@ -189,9 +189,10 @@ void Boids::initSimulation(int N) {
   gridCellCount = gridSideCount * gridSideCount * gridSideCount;
   gridInverseCellWidth = 1.0f / gridCellWidth;
   float halfGridWidth = gridCellWidth * halfSideCount;
-  gridMinimum.x -= halfGridWidth;
-  gridMinimum.y -= halfGridWidth;
-  gridMinimum.z -= halfGridWidth;
+  //gridMinimum.x -= halfGridWidth;
+  //gridMinimum.y -= halfGridWidth;
+  //gridMinimum.z -= halfGridWidth;
+  gridMinimum = glm::vec3(-halfGridWidth, -halfGridWidth, -halfGridWidth);
 
   // TODO-2.1 TODO-2.3 - Allocate additional buffers here.
 
@@ -564,19 +565,6 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
   float inverseCellWidth, float cellWidth, float neighborhoodDist,
   int *gridCellStartIndices, int *gridCellEndIndices,
   glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
-  // TODO-2.3 - This should be very similar to kernUpdateVelNeighborSearchScattered,
-  // except with one less level of indirection.
-  // This should expect gridCellStartIndices and gridCellEndIndices to refer
-  // directly to pos and vel1.
-  // - Identify the grid cell that this particle is in
-  // - Identify which cells may contain neighbors. This isn't always 8.
-  // - For each cell, read the start/end indices in the boid pointer array.
-  //   DIFFERENCE: For best results, consider what order the cells should be
-  //   checked in to maximize the memory benefits of reordering the boids data.
-  // - Access each boid in the cell and compute velocity change from
-  //   the boids rules, if this boid is within the neighborhood distance.
-  // - Clamp the speed change before putting the new speed in vel2
-
 
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (index >= N) {
@@ -680,39 +668,29 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 * Step the entire N-body simulation by `dt` seconds.
 */
 void Boids::stepSimulationNaive(float dt) {
-  // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
-  // TODO-1.2 ping-pong the velocity buffers
     dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
 
     kernUpdateVelocityBruteForce << < fullBlocksPerGrid, blockSize >> > (numObjects, dev_pos, dev_vel1, dev_vel2);
     kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
 
+    // ping pong vel buffers
     std::swap(dev_vel1, dev_vel2);
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
-  // TODO-2.1
-  // Uniform Grid Neighbor search using Thrust sort.
-  // In Parallel:
-  // - label each particle with its array index as well as its grid index.
-  //   Use 2x width grids.
-  // - Unstable key sort using Thrust. A stable sort isn't necessary, but you
-  //   are welcome to do a performance comparison.
-  // - Naively unroll the loop for finding the start and end indices of each
-  //   cell's data pointers in the array of boid indices
-  // - Perform velocity updates using neighbor search
-  // - Update positions
-  // - Ping-pong buffers as needed
+
     dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
     // gridSideCount == resolution
     kernComputeIndices << <fullBlocksPerGrid, blockSize >> > (numObjects, gridSideCount, gridMinimum,
         gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
 
+    // sort indices by grid index using thrust library
     dev_thrust_particleArrayIndices = thrust::device_ptr<int>(dev_particleArrayIndices);
     dev_thrust_particleGridIndices = thrust::device_ptr<int>(dev_particleGridIndices);
     thrust::sort_by_key(dev_thrust_particleGridIndices, dev_thrust_particleGridIndices + numObjects,
             dev_thrust_particleArrayIndices);
 
+    // populate the start index with -1 as a sentinel to skip for no boids
     dim3 cellBlocks((gridCellCount + blockSize - 1) / blockSize);
     kernResetIntBuffer << <cellBlocks, blockSize >> > (gridCellCount, dev_gridCellStartIndices, -1);
 
@@ -731,53 +709,45 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 }
 
 void Boids::stepSimulationCoherentGrid(float dt) {
-  // TODO-2.3 - start by copying Boids::stepSimulationNaiveGrid
-  // Uniform Grid Neighbor search using Thrust sort on cell-coherent data.
-  // In Parallel:
-  // - Label each particle with its array index as well as its grid index.
-  //   Use 2x width grids
-  // - Unstable key sort using Thrust. A stable sort isn't necessary, but you
-  //   are welcome to do a performance comparison.
-  // - Naively unroll the loop for finding the start and end indices of each
-  //   cell's data pointers in the array of boid indices
-  // - BIG DIFFERENCE: use the rearranged array index buffer to reshuffle all
-  //   the particle data in the simulation array.
-  //   CONSIDER WHAT ADDITIONAL BUFFERS YOU NEED
-  // - Perform velocity updates using neighbor search
-  // - Update positions
-  // - Ping-pong buffers as needed. THIS MAY BE DIFFERENT FROM BEFORE.
-
+  
     dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
     dim3 cellBlocks((gridCellCount + blockSize - 1) / blockSize);
 
     kernComputeIndices << <fullBlocksPerGrid, blockSize >> > (numObjects, gridSideCount, gridMinimum,
         gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
 
+    // use thrust to sort array indices by grid index
     dev_thrust_particleArrayIndices = thrust::device_ptr<int>(dev_particleArrayIndices);
     dev_thrust_particleGridIndices = thrust::device_ptr<int>(dev_particleGridIndices);
-
     thrust::sort_by_key(dev_thrust_particleGridIndices, dev_thrust_particleGridIndices + numObjects,
         dev_thrust_particleArrayIndices);
 
+    // set start indices to default to -1 indicating no boids
     kernResetIntBuffer << <cellBlocks, blockSize >> > (gridCellCount, dev_gridCellStartIndices, -1);
 
     kernIdentifyCellStartEnd << <fullBlocksPerGrid, blockSize >> > (numObjects, dev_particleGridIndices,
         dev_gridCellStartIndices, dev_gridCellEndIndices);
 
+    // kernel which uses two additional buffers to copy pos and vel1 in order into
+    // dev_pos_sort and dev_vel1_sort
     kernSort << <fullBlocksPerGrid, blockSize >> > (numObjects, dev_particleArrayIndices,
         dev_pos, dev_vel1, dev_pos_sort, dev_vel1_sort);
 
+    // ping pong the "sort" versions into the real versions by swapping pointers
     std::swap(dev_pos, dev_pos_sort);
     std::swap(dev_vel1, dev_vel1_sort);
 
+    // proceed with the coherent grid version, as dev_pos and dev_vel1 are contiguous in grid cell
     kernUpdateVelNeighborSearchCoherent << <fullBlocksPerGrid, blockSize >> > (numObjects,
         gridSideCount, gridMinimum, gridInverseCellWidth, gridCellWidth, neighborhoodDistance, 
         dev_gridCellStartIndices, dev_gridCellEndIndices, dev_pos, dev_vel1, dev_vel2);
 
-
     kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
 
+    // ping pong vel buffers
     std::swap(dev_vel1, dev_vel2);
+
+    return;
 }
 
 void Boids::endSimulation() {
@@ -790,57 +760,114 @@ void Boids::endSimulation() {
   cudaFree(dev_gridCellStartIndices);
   cudaFree(dev_gridCellEndIndices);
 
-  // TODO-2.1 TODO-2.3 - Free any additional buffers here.
+  cudaFree(dev_pos_sort);
+  cudaFree(dev_vel1_sort);
+}
+
+// go back and write this as a start, end, step type unit test. then can input a bunch
+// should be quick
+
+void Boids::specUnitTest(std::string name, glm::vec3* before_pos, glm::vec3* before_vel1,
+    glm::vec3* before_vel2, glm::vec3* exp_pos, glm::vec3* exp_vel1,
+    glm::vec3* exp_vel2, int num_boids, float dt) {
+    // wrapper which runs the test in all 3 modes
+    specUnitTest(name + " Naive", before_pos, before_vel1, before_vel2, exp_pos, exp_vel1,
+        exp_vel2, num_boids, dt, (int)Mode::NAIVE);
+    specUnitTest(name + " Scattered", before_pos, before_vel1, before_vel2, exp_pos, exp_vel1,
+        exp_vel2, num_boids, dt, (int)Mode::SCATTERED);
+    specUnitTest(name + " Coherent", before_pos, before_vel1, before_vel2, exp_pos, exp_vel1,
+        exp_vel2, num_boids, dt, (int)Mode::COHERENT);
+}
+
+void Boids::specUnitTest(std::string name, glm::vec3* before_pos, glm::vec3* before_vel1,
+    glm::vec3* before_vel2, glm::vec3* exp_pos, glm::vec3* exp_vel1,
+    glm::vec3* exp_vel2, int num_boids, float dt, int mode) {
+
+    // implementation here
+
+    initSimulation(num_boids);
+
+    // copy to device
+
+    cudaMemcpy(dev_pos, before_pos, num_boids * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_vel1, before_vel1, num_boids * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_vel2, before_vel2, num_boids * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
+    // step in given mode
+
+    switch (mode) {
+    case NAIVE:
+        stepSimulationNaive(dt);
+        break;
+    case SCATTERED:
+        stepSimulationScatteredGrid(dt);
+        break;
+    case COHERENT:
+        stepSimulationCoherentGrid(dt);
+        break;
+    }
+
+    // copy to host
+    std::vector<glm::vec3> pos_res(num_boids);
+    std::vector<glm::vec3> vel1_res(num_boids);
+    std::vector<glm::vec3> vel2_res(num_boids);
+    cudaMemcpy(pos_res.data(), dev_pos, num_boids * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(vel1_res.data(), dev_vel1, num_boids * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(vel2_res.data(), dev_vel2, num_boids * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+
+    // check for error / assertion
+    std::cerr << "Running Test: " << name << std::endl;
+    int err_count = 0;
+    for (int i = 0; i < num_boids; ++i) {
+        glm::vec3 pos_dif = pos_res[i] - exp_pos[i];
+        float err1 = glm::length(pos_dif);
+        glm::vec3 vel1_dif = vel1_res[i] - exp_vel1[i];
+        float err2 = glm::length(vel1_dif);
+        glm::vec3 vel2_dif = vel2_res[i] - exp_vel2[i];
+        float err3 = glm::length(vel2_dif);
+        if (err1 > 0.001 || err2 > 0.001 || err3 > 0.001) {
+            std::cerr << name << " FAIL: Boid " << i << " pos: " << err1 << " vel1: " << err2 <<
+                " vel2: " << err3 << std::endl;
+            ++err_count;
+        }
+    }
+    std::cerr << "Test complete: " << err_count << " errors." << std::endl;
+
+    // clean
+    endSimulation();
+
+    return;
+
+
 }
 
 void Boids::unitTest() {
-  // LOOK-1.2 Feel free to write additional tests here.
-  // Test for naive boids
-  // initialize with specific locations
 
-    numObjects = 4;
-
+  // Simple unit test, 3 in flock 1 outside, 0 velocity initialization
     glm::vec3 test1_pos[4] = {
         glm::vec3(0.0f),
         glm::vec3(1.0f, 0.0f, 0.0f),
         glm::vec3(0.0f, 2.0f, 0.0f),
         glm::vec3(50.0f)
     };
-
-    cudaMalloc((void**)&dev_pos, 4 * sizeof(glm::vec3));
-    checkCUDAErrorWithLine("test1: cudaMalloc dev_pos failed");
-
-    cudaMalloc((void**)&dev_vel1, 4 * sizeof(glm::vec3));
-    checkCUDAErrorWithLine("test1: cudaMalloc dev_vel1 failed");
-
-    cudaMalloc((void**)&dev_vel2, 4 * sizeof(glm::vec3));
-    checkCUDAErrorWithLine("test1: cudaMalloc dev_pos failed");
-
-    // Initialize velocity to 0
-    cudaMemset(dev_vel1, 0, 4 * sizeof(glm::vec3));
-    checkCUDAErrorWithLine("cudaMemset dev_vel1 failed!");
-
-    cudaMemset(dev_vel2, 0, 4 * sizeof(glm::vec3));
-    checkCUDAErrorWithLine("cudaMemset dev_vel2 failed!");
-
-    // set custom test val
-    cudaMemcpy(dev_pos, test1_pos, 4 * sizeof(glm::vec3), cudaMemcpyHostToDevice);
-
-    stepSimulationNaive(1.0f); // test of one iteration
-    glm::vec3 pos_res[4];
-    glm::vec3 vel1_res[4];
-    glm::vec3 vel2_res[4];
-    cudaMemcpy(pos_res, dev_pos, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
-    cudaMemcpy(vel1_res, dev_vel1, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
-    cudaMemcpy(vel2_res, dev_vel2, 4 * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
-
+    glm::vec3 test1_vel[4] = {
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f)
+    };
+    glm::vec3 test1_vel2[4] = {
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(0.0f)
+    };
     glm::vec3 pos_exp[4] = {
         glm::vec3(-0.095f, -0.19f, 0.0f),
         glm::vec3(1.19f, -0.19f, 0.0f),
         glm::vec3(-0.095f, 2.38f, 0.0f),
         glm::vec3(50.0f)
     };
-
     // dev1 pts to dev2 from the simulation
     glm::vec3 vel1_exp[4] = {
     glm::vec3(-0.095f, -0.19f, 0.0f),
@@ -848,7 +875,6 @@ void Boids::unitTest() {
     glm::vec3(-0.095f, 0.38f, 0.0f),
     glm::vec3(0.0f)
     };
-
     // dev2 is "empty" it was the existing dev1
     glm::vec3 vel2_exp[4] = {
         glm::vec3(0.0f),
@@ -857,20 +883,9 @@ void Boids::unitTest() {
         glm::vec3(0.0f)
     };
 
-    // print out inconsistencies
-
-    for (int i = 0; i < 4; ++i) {
-        glm::vec3 pos_dif = pos_res[i] - pos_exp[i];
-        float err1 = glm::length(pos_dif);
-        glm::vec3 vel1_dif = vel1_res[i] - vel1_exp[i];
-        float err2 = glm::length(vel1_dif);
-        glm::vec3 vel2_dif = vel2_res[i] - vel2_exp[i];
-        float err3 = glm::length(vel2_dif);
-        std::cout << "Boid " << i << " pos: " << err1 << " vel1: " << err2 << " vel2: " << err3 << std::endl;
-    }
-
-
-
+    // run test
+    specUnitTest("Simple test", test1_pos, test1_vel, test1_vel2,
+        pos_exp, vel1_exp, vel2_exp, 4, 1.0);
 
   // test unstable sort
   int *dev_intKeys;

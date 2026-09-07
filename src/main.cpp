@@ -231,7 +231,7 @@ void initShaders(GLuint * program) {
 
 
     // moved unit tests to before sim init so N can be changed
-    //Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
+     // LOOK-1.2 We run some basic example code to make sure
                        // your CUDA development setup is ready to go.
 
     while (!glfwWindowShouldClose(window)) {
