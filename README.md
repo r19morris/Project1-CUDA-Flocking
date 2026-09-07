@@ -1,9 +1,9 @@
 **University of Pennsylvania, CIS 5650: GPU Programming and Architecture,
 Project 1 - Flocking**
 
-* (TODO) YOUR NAME HERE
-  * (TODO) [LinkedIn](), [personal website](), [twitter](), etc.
-* Tested on: (TODO) Windows 22, i7-2222 @ 2.22GHz 22GB, GTX 222 222MB (Moore 2222 Lab)
+* Ryan Morris
+  * [LinkedIn](www.linkedin.com/in/r19)
+* Tested on: (TODO) Windows 11, i7-12700H @ 2.3GHz 64GB, GeForce RTX 3070 Ti Laptop GPU 8GB
 
 ### (TODO: Your README)
 
