@@ -4,11 +4,10 @@ Project 1 - Flocking**
 * Ryan Morris
   * [LinkedIn](www.linkedin.com/in/r19)
 * Tested on: (TODO) Windows 11, i7-12700H @ 2.3GHz 64GB, GeForce RTX 3070 Ti Laptop GPU 8GB
+<p align = "center">
+<img src = "images/main_demo.gif" width="300">
+</p>
 
-![]();
-
-
-* 
 **Note for graders**: Submission version for grading 9/7 11:59PM (1 late day used)
 
 Include screenshots, analysis, etc. (Remember, this is public, so don't put
@@ -24,5 +23,5 @@ anything here that you don't want to share with the world.)
 
 Step 1: Create graph with framerate change with increasing boid # for each solution, one for each with and without visualization
 Step 2: Framerate change for increasing block size (this is the 128 thing), I guess can run this on best solution
-Step 3:
+Step 3: 9 vs 27 (single vs double)
 Step 4: Show bloopers, etc. 

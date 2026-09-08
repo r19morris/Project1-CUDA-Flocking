@@ -22,14 +22,14 @@
 // ================
 
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
-#define VISUALIZE 0
+#define VISUALIZE 1
 #define UNIFORM_GRID 1
 #define COHERENT_GRID 1
-#define MEASURE_PERF 1
+#define MEASURE_PERF 0
 
 // LOOK-1.2 - change this to adjust particle count in the simulation
-const int N_FOR_VIS = 50000; // 5000 originally
-const float DT = 0.2f;
+const int N_FOR_VIS = 5000; // 5000 originally
+const float DT = 0.04f;
 const int MAX_STEPS = 1000;
 const int DISCARD_STEPS = 100;
 
@@ -276,7 +276,8 @@ void initShaders(GLuint * program) {
 
       #if MEASURE_PERF
       if (step_count >= MAX_STEPS + DISCARD_STEPS) {
-          std::cout << time_elapsed;
+          float avg_ms = time_elapsed / (step_count - DISCARD_STEPS);
+          std::cout << time_elapsed << ", " << avg_ms << " (avg)" << std::endl;
           return;
       }
       #endif
