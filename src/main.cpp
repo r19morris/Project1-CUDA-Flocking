@@ -22,13 +22,19 @@
 // ================
 
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
-#define VISUALIZE 1
+#define VISUALIZE 0
 #define UNIFORM_GRID 1
 #define COHERENT_GRID 1
+#define MEASURE_PERF 1
 
 // LOOK-1.2 - change this to adjust particle count in the simulation
-const int N_FOR_VIS = 5000;
+const int N_FOR_VIS = 50000; // 5000 originally
 const float DT = 0.2f;
+const int MAX_STEPS = 1000;
+const int DISCARD_STEPS = 100;
+
+static int step_count = 0;
+static float time_elapsed;
 
 /**
 * C main function.
@@ -207,6 +213,15 @@ void initShaders(GLuint * program) {
     cudaGLMapBufferObject((void**)&dptrVertPositions, boidVBO_positions);
     cudaGLMapBufferObject((void**)&dptrVertVelocities, boidVBO_velocities);
 
+    // for performance measurement
+    // (https://developer.nvidia.com/blog/how-implement-performance-metrics-cuda-cc/)
+    #if MEASURE_PERF
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    #endif
     // execute the kernel
     #if UNIFORM_GRID && COHERENT_GRID
     Boids::stepSimulationCoherentGrid(DT);
@@ -214,6 +229,17 @@ void initShaders(GLuint * program) {
     Boids::stepSimulationScatteredGrid(DT);
     #else
     Boids::stepSimulationNaive(DT);
+    #endif
+
+    #if MEASURE_PERF
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    if (step_count >= DISCARD_STEPS) {
+        time_elapsed += milliseconds;
+    }
+    ++step_count;
     #endif
 
     #if VISUALIZE
@@ -248,6 +274,12 @@ void initShaders(GLuint * program) {
 
       runCUDA();
 
+      #if MEASURE_PERF
+      if (step_count >= MAX_STEPS + DISCARD_STEPS) {
+          std::cout << time_elapsed;
+          return;
+      }
+      #endif
       std::ostringstream ss;
       ss << "[";
       ss.precision(1);
