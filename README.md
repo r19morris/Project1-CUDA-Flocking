@@ -4,11 +4,26 @@ Project 1 - Flocking**
 * Ryan Morris
   * [LinkedIn](www.linkedin.com/in/r19)
 * Tested on: Windows 11, Intel i7-12700H @ 2.3GHz 64GB, GeForce RTX 3070 Ti Laptop GPU 8GB
+
+## Final Product Demo
+
+50,000 boids:
 <p align = "center">
-<img src = "images/main_demo.gif" width="300">
+<img src = "images/50k-small.gif" width="400">
 </p>
 
-**Note for graders**: Submission version for grading 9/7 11:59PM (1 late day used)
+5,000 boids:
+<p align = "center">
+<img src = "images/retry-5000.gif" width="400">
+</p>
+
+1,000,000 boids:
+
+<img src = "images/1mm.gif" width="100">
+
+Note: Default assignment settings except for dt = 0.04 in an effort to reduce speed on my GPU.
+
+**Note for graders**: Submission version for grading 9/8 11:59PM (2 late days used)
 
 
 ## Performance Analysis
