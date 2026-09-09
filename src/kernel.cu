@@ -63,7 +63,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 #define rule3Scale 0.1f
 
 #define maxSpeed 1.0f
-#define gridCellRatio 2.0f // gridCellWidth / neighborhood distance
+#define gridCellRatio 1.0f // gridCellWidth / neighborhood distance
 
 /*! Size of the starting area in simulation space. */
 #define scene_scale 100.0f
